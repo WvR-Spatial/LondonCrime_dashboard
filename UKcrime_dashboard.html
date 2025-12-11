@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CrimeEye: Dynamic Spatial Analysis</title>
+    
+    <script src="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
+    <link href="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css" rel="stylesheet" />
+    <script src="https://unpkg.com/@turf/turf@6.5.0/turf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <style>
+        body { margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; display: flex; height: 100vh; overflow: hidden; background: #1a1a1a; }
+        
+        #sidebar {
+            width: 320px;
+            background: #1e1e1e;
+            color: #e0e0e0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            border-right: 1px solid #333;
+            z-index: 2;
+            box-shadow: 2px 0 10px rgba(0,0,0,0.5);
+        }
+        #map { flex-grow: 1; position: relative; }
+        
+        h1 { font-size: 20px; color: #00bcd4; margin: 0 0 5px 0; letter-spacing: 1px; }
+        h2 { font-size: 13px; color: #888; margin-bottom: 25px; font-weight: normal; }
+        
+        .stat-card {
+            background: #2a2a2a;
+            padding: 15px;
+            border-radius: 6px;
+            margin-bottom: 15px;
+            border-left: 3px solid #00bcd4;
+        }
+        .stat-value { font-size: 28px; font-weight: bold; color: white; }
+        .stat-label { font-size: 11px; color: #aaa; text-transform: uppercase; letter-spacing: 0.5px; }
+
+        .chart-container {
+            background: #2a2a2a;
+            padding: 15px;
+            border-radius: 6px;
+            margin-top: auto; 
+            height: 220px;
+        }
+
+        #loading {
+            position: absolute; top: 10px; right: 10px;
+            background: rgba(0,0,0,0.8); color: #00bcd4; 
+            padding: 8px 15px; border-radius: 4px; font-size: 12px;
+            z-index: 100; display: none; border: 1px solid #00bcd4;
+        }
+    </style>
+</head>
+<body>
+
+<div id="loading">Updating Analysis...</div>
+
+<div id="sidebar">
+    <h1>CrimeEye London</h1>
+    <h2>Dynamic Hex-Grid Aggregation</h2>
+    
+    <div class="stat-card">
+        <div class="stat-value" id="current-resolution">0.5 km</div>
+        <div class="stat-label">Current Grid Resolution</div>
+    </div>
+    
+    <div class="stat-card" style="border-color: #e91e63;">
+        <div class="stat-value" id="hex-density">-</div>
+        <div class="stat-label">Crimes in Selected Hex</div>
+    </div>
+
+    <div class="chart-container">
+        <canvas id="crimeChart"></canvas>
+    </div>
+    
+    <p style="font-size: 10px; color: #555; margin-top: 15px; text-align:center;">
+        Hover over a hexagon to analyze specific demographics. <br>Zoom in/out to resample grid.
+    </p>
+</div>
+
+<div id="map"></div>
+
+<script>
+    // --- 1. SETUP CHART ---
+    const ctx = document.getElementById('crimeChart').getContext('2d');
+    let crimeChart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: [],
+            datasets: [{
+                label: 'Incidents',
+                data: [],
+                backgroundColor: ['#00bcd4', '#e91e63', '#ff9800', '#9c27b0', '#4caf50'],
+                borderRadius: 3
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: {
+                y: { beginAtZero: true, grid: { color: '#333' }, ticks: { color: '#888' } },
+                x: { ticks: { color: '#888', font: { size: 9 } }, grid: { display: false } }
+            }
+        }
+    });
+
+    // --- 2. SETUP MAP ---
+    const map = new maplibregl.Map({
+        container: 'map',
+        style: 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json',
+        center: [-0.1276, 51.5074],
+        zoom: 12,
+        minZoom: 10,
+        maxZoom: 16
+    });
+
+    // --- 3. DATA GENERATION (Simulating a database) ---
+    // We generate data for ALL of Greater London so you can pan around
+    let allCrimePoints = null;
+
+    function generateWideAreaMockData() {
+        // Bounds for Greater London (Approx)
+        const bounds = [-0.50, 51.30, 0.20, 51.70]; 
+        // Generate 5000 points to ensure density
+        const points = turf.randomPoint(5000, { bbox: bounds });
+        
+        const categories = ['Theft', 'Burglary', 'Drugs', 'Violence', 'Vehicle'];
+        turf.featureEach(points, function (currentFeature) {
+            currentFeature.properties = {
+                category: categories[Math.floor(Math.random() * categories.length)],
+                id: Math.random().toString(36).substr(2, 9) // unique ID
+            };
+        });
+        return points;
+    }
+
+    allCrimePoints = generateWideAreaMockData();
+
+
+    // --- 4. THE CORE LOGIC: UPDATE GRID ---
+    
+    // Debounce function to prevent updating 60 times a second while dragging
+    let debounceTimer;
+    
+    function updateGrid() {
+        document.getElementById('loading').style.display = 'block';
+
+        // 1. Determine Grid Resolution based on Zoom
+        const zoom = map.getZoom();
+        let hexRadius; 
+        
+        if (zoom < 11) hexRadius = 2.0;       // Macro Analysis (2km)
+        else if (zoom < 12) hexRadius = 1.0;  // City View (1km)
+        else if (zoom < 13.5) hexRadius = 0.5;// Neighborhood (500m)
+        else hexRadius = 0.2;                 // Street Level (200m)
+
+        document.getElementById('current-resolution').innerText = `${hexRadius} km`;
+
+        // 2. Get Current Map Viewport (so we only draw hexes where we are looking)
+        const bounds = map.getBounds();
+        const bbox = [bounds.getWest(), bounds.getSouth(), bounds.getEast(), bounds.getNorth()];
+        
+        // 3. Generate Hex Grid (Turf.js)
+        // We use the viewport bbox to generate the grid
+        const hexGrid = turf.hexGrid(bbox, hexRadius, {units: 'kilometers'});
+
+        // 4. Spatial Join (The Heavy Lifting)
+        // Collect points from our "Database" (allCrimePoints) into the new Hex Grid
+        const aggregated = turf.collect(hexGrid, allCrimePoints, 'category', 'crime_types');
+
+        // 5. Calculate Density
+        const activeHexes = [];
+        turf.featureEach(aggregated, (feature, index) => {
+            const count = feature.properties.crime_types.length;
+            if (count > 0) {
+                feature.properties.density = count;
+                feature.id = index; // MapLibre needs numeric IDs for featureState
+                activeHexes.push(feature);
+            }
+        });
+
+        // 6. Update Map Source
+        const finalData = { type: "FeatureCollection", features: activeHexes };
+        
+        if (map.getSource('hexagons')) {
+            map.getSource('hexagons').setData(finalData);
+        } else {
+            // Initial Add (First Load)
+            map.addSource('hexagons', { type: 'geojson', data: finalData });
+            
+            map.addLayer({
+                id: 'hex-fill',
+                type: 'fill',
+                source: 'hexagons',
+                paint: {
+                    'fill-color': [
+                        'interpolate', ['linear'], ['get', 'density'],
+                        0, '#2c3e50',
+                        5, '#00bcd4', 
+                        20, '#e91e63'
+                    ],
+                    'fill-opacity': [
+                        'case',
+                        ['boolean', ['feature-state', 'hover'], false],
+                        0.8, // Hover Opacity
+                        0.5  // Normal Opacity
+                    ],
+                    'fill-outline-color': 'rgba(0,0,0,0.2)'
+                }
+            });
+
+            map.addLayer({
+                id: 'hex-line',
+                type: 'line',
+                source: 'hexagons',
+                paint: {
+                    'line-color': '#00bcd4',
+                    'line-width': [
+                        'case',
+                        ['boolean', ['feature-state', 'hover'], false],
+                        2, 0 // Only show thick line on hover
+                    ]
+                }
+            });
+        }
+
+        document.getElementById('loading').style.display = 'none';
+    }
+
+
+    map.on('load', () => {
+        updateGrid(); // Run once on start
+        
+        // --- 5. INTERACTION ---
+        let hoveredId = null;
+
+        // Mouse Move (Hover Effect)
+        map.on('mousemove', 'hex-fill', (e) => {
+            if (e.features.length > 0) {
+                const feature = e.features[0];
+                
+                if (hoveredId !== null) {
+                    map.setFeatureState({source: 'hexagons', id: hoveredId}, {hover: false});
+                }
+                hoveredId = feature.id;
+                map.setFeatureState({source: 'hexagons', id: hoveredId}, {hover: true});
+                
+                map.getCanvas().style.cursor = 'pointer';
+
+                // Update Stats
+                const density = feature.properties.density;
+                document.getElementById('hex-density').innerText = density;
+
+                // Parse Categories
+                let crimeTypes = [];
+                try {
+                     crimeTypes = JSON.parse(feature.properties.crime_types);
+                } catch(err) {
+                     crimeTypes = feature.properties.crime_types || [];
+                }
+
+                // Update Chart
+                const counts = {};
+                crimeTypes.forEach(x => { counts[x] = (counts[x] || 0) + 1; });
+                
+                crimeChart.data.labels = Object.keys(counts);
+                crimeChart.data.datasets[0].data = Object.values(counts);
+                crimeChart.update();
+            }
+        });
+
+        map.on('mouseleave', 'hex-fill', () => {
+            if (hoveredId !== null) {
+                map.setFeatureState({source: 'hexagons', id: hoveredId}, {hover: false});
+            }
+            hoveredId = null;
+            map.getCanvas().style.cursor = '';
+            document.getElementById('hex-density').innerText = '-';
+        });
+
+        // --- 6. EVENT LISTENERS FOR REDRAW ---
+        // When the map stops moving or zooming, re-calculate the grid
+        map.on('moveend', () => {
+            clearTimeout(debounceTimer);
+            debounceTimer = setTimeout(updateGrid, 100); // 100ms delay to be efficient
+        });
+    });
+
+</script>
+</body>
+</html>
