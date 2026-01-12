@@ -47,6 +47,18 @@
             height: 220px;
         }
 
+        /* Attribution Styling */
+        .source-link {
+            font-size: 10px;
+            color: #666;
+            margin-top: 15px;
+            text-align: center;
+            border-top: 1px solid #333;
+            padding-top: 10px;
+        }
+        .source-link a { color: #00bcd4; text-decoration: none; }
+        .source-link a:hover { text-decoration: underline; }
+
         #loading {
             position: absolute; top: 10px; right: 10px;
             background: rgba(0,0,0,0.8); color: #00bcd4; 
@@ -77,9 +89,15 @@
         <canvas id="crimeChart"></canvas>
     </div>
     
-    <p style="font-size: 10px; color: #555; margin-top: 15px; text-align:center;">
-        Hover over a hexagon to analyze specific demographics. <br>Zoom in/out to resample grid.
+    <p style="font-size: 11px; color: #aaa; margin-top: 15px; text-align:center; font-style:italic;">
+        Hover over map to filter chart. Zoom to resample grid.
     </p>
+
+    <div class="source-link">
+        Data Structure: UK Police API (Simulated)<br>
+        Analysis: Turf.js Client-Side Clustering<br>
+        <a href="https://data.police.uk/" target="_blank">View Original Data Source</a>
+    </div>
 </div>
 
 <div id="map"></div>
@@ -94,7 +112,15 @@
             datasets: [{
                 label: 'Incidents',
                 data: [],
-                backgroundColor: ['#00bcd4', '#e91e63', '#ff9800', '#9c27b0', '#4caf50'],
+                // Expanded palette to ensure 5+ categories are distinct
+                backgroundColor: [
+                    '#00bcd4', // Cyan
+                    '#e91e63', // Pink
+                    '#ff9800', // Orange
+                    '#9c27b0', // Purple
+                    '#4caf50', // Green
+                    '#ffeb3b'  // Yellow (Safety fallback)
+                ],
                 borderRadius: 3
             }]
         },
@@ -119,21 +145,20 @@
         maxZoom: 16
     });
 
-    // --- 3. DATA GENERATION (Simulating a database) ---
-    // We generate data for ALL of Greater London so you can pan around
+    // --- 3. DATA GENERATION ---
     let allCrimePoints = null;
 
     function generateWideAreaMockData() {
-        // Bounds for Greater London (Approx)
         const bounds = [-0.50, 51.30, 0.20, 51.70]; 
-        // Generate 5000 points to ensure density
         const points = turf.randomPoint(5000, { bbox: bounds });
         
+        // HERE ARE YOUR 5 CATEGORIES
         const categories = ['Theft', 'Burglary', 'Drugs', 'Violence', 'Vehicle'];
+        
         turf.featureEach(points, function (currentFeature) {
             currentFeature.properties = {
                 category: categories[Math.floor(Math.random() * categories.length)],
-                id: Math.random().toString(36).substr(2, 9) // unique ID
+                id: Math.random().toString(36).substr(2, 9)
             };
         });
         return points;
@@ -142,55 +167,42 @@
     allCrimePoints = generateWideAreaMockData();
 
 
-    // --- 4. THE CORE LOGIC: UPDATE GRID ---
-    
-    // Debounce function to prevent updating 60 times a second while dragging
+    // --- 4. CORE LOGIC (UNCHANGED) ---
     let debounceTimer;
     
     function updateGrid() {
         document.getElementById('loading').style.display = 'block';
 
-        // 1. Determine Grid Resolution based on Zoom
         const zoom = map.getZoom();
         let hexRadius; 
         
-        if (zoom < 11) hexRadius = 2.0;       // Macro Analysis (2km)
-        else if (zoom < 12) hexRadius = 1.0;  // City View (1km)
-        else if (zoom < 13.5) hexRadius = 0.5;// Neighborhood (500m)
-        else hexRadius = 0.2;                 // Street Level (200m)
+        if (zoom < 11) hexRadius = 2.0;       
+        else if (zoom < 12) hexRadius = 1.0;  
+        else if (zoom < 13.5) hexRadius = 0.5;
+        else hexRadius = 0.2;                 
 
         document.getElementById('current-resolution').innerText = `${hexRadius} km`;
 
-        // 2. Get Current Map Viewport (so we only draw hexes where we are looking)
         const bounds = map.getBounds();
         const bbox = [bounds.getWest(), bounds.getSouth(), bounds.getEast(), bounds.getNorth()];
-        
-        // 3. Generate Hex Grid (Turf.js)
-        // We use the viewport bbox to generate the grid
         const hexGrid = turf.hexGrid(bbox, hexRadius, {units: 'kilometers'});
-
-        // 4. Spatial Join (The Heavy Lifting)
-        // Collect points from our "Database" (allCrimePoints) into the new Hex Grid
         const aggregated = turf.collect(hexGrid, allCrimePoints, 'category', 'crime_types');
 
-        // 5. Calculate Density
         const activeHexes = [];
         turf.featureEach(aggregated, (feature, index) => {
             const count = feature.properties.crime_types.length;
             if (count > 0) {
                 feature.properties.density = count;
-                feature.id = index; // MapLibre needs numeric IDs for featureState
+                feature.id = index;
                 activeHexes.push(feature);
             }
         });
 
-        // 6. Update Map Source
         const finalData = { type: "FeatureCollection", features: activeHexes };
         
         if (map.getSource('hexagons')) {
             map.getSource('hexagons').setData(finalData);
         } else {
-            // Initial Add (First Load)
             map.addSource('hexagons', { type: 'geojson', data: finalData });
             
             map.addLayer({
@@ -207,8 +219,8 @@
                     'fill-opacity': [
                         'case',
                         ['boolean', ['feature-state', 'hover'], false],
-                        0.8, // Hover Opacity
-                        0.5  // Normal Opacity
+                        0.8, 
+                        0.5 
                     ],
                     'fill-outline-color': 'rgba(0,0,0,0.2)'
                 }
@@ -223,7 +235,7 @@
                     'line-width': [
                         'case',
                         ['boolean', ['feature-state', 'hover'], false],
-                        2, 0 // Only show thick line on hover
+                        2, 0 
                     ]
                 }
             });
@@ -234,12 +246,10 @@
 
 
     map.on('load', () => {
-        updateGrid(); // Run once on start
+        updateGrid(); 
         
-        // --- 5. INTERACTION ---
         let hoveredId = null;
 
-        // Mouse Move (Hover Effect)
         map.on('mousemove', 'hex-fill', (e) => {
             if (e.features.length > 0) {
                 const feature = e.features[0];
@@ -252,11 +262,9 @@
                 
                 map.getCanvas().style.cursor = 'pointer';
 
-                // Update Stats
                 const density = feature.properties.density;
                 document.getElementById('hex-density').innerText = density;
 
-                // Parse Categories
                 let crimeTypes = [];
                 try {
                      crimeTypes = JSON.parse(feature.properties.crime_types);
@@ -264,7 +272,6 @@
                      crimeTypes = feature.properties.crime_types || [];
                 }
 
-                // Update Chart
                 const counts = {};
                 crimeTypes.forEach(x => { counts[x] = (counts[x] || 0) + 1; });
                 
@@ -283,11 +290,9 @@
             document.getElementById('hex-density').innerText = '-';
         });
 
-        // --- 6. EVENT LISTENERS FOR REDRAW ---
-        // When the map stops moving or zooming, re-calculate the grid
         map.on('moveend', () => {
             clearTimeout(debounceTimer);
-            debounceTimer = setTimeout(updateGrid, 100); // 100ms delay to be efficient
+            debounceTimer = setTimeout(updateGrid, 100); 
         });
     });
 
