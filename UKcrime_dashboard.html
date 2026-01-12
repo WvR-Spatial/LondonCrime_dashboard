@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CrimeEye: Dynamic Spatial Analysis</title>
+    <title>CrimeEye: UK Police API Live</title>
     
     <script src="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
     <link href="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css" rel="stylesheet" />
@@ -36,18 +36,30 @@
             margin-bottom: 15px;
             border-left: 3px solid #00bcd4;
         }
-        .stat-value { font-size: 28px; font-weight: bold; color: white; }
+        .stat-value { font-size: 24px; font-weight: bold; color: white; }
         .stat-label { font-size: 11px; color: #aaa; text-transform: uppercase; letter-spacing: 0.5px; }
+
+        /* Date Picker Styling */
+        .control-group { margin-bottom: 20px; }
+        label { display: block; font-size: 11px; color: #aaa; margin-bottom: 5px; text-transform: uppercase; }
+        input[type="month"] {
+            width: 100%;
+            background: #333;
+            border: 1px solid #444;
+            color: white;
+            padding: 8px;
+            border-radius: 4px;
+            font-family: inherit;
+        }
 
         .chart-container {
             background: #2a2a2a;
             padding: 15px;
             border-radius: 6px;
             margin-top: auto; 
-            height: 220px;
+            height: 200px;
         }
 
-        /* Attribution Styling */
         .source-link {
             font-size: 10px;
             color: #666;
@@ -57,27 +69,35 @@
             padding-top: 10px;
         }
         .source-link a { color: #00bcd4; text-decoration: none; }
-        .source-link a:hover { text-decoration: underline; }
 
-        #loading {
+        /* Floating Status Messages */
+        #status-msg {
             position: absolute; top: 10px; right: 10px;
-            background: rgba(0,0,0,0.8); color: #00bcd4; 
-            padding: 8px 15px; border-radius: 4px; font-size: 12px;
-            z-index: 100; display: none; border: 1px solid #00bcd4;
+            background: rgba(0,0,0,0.9); color: #fff; 
+            padding: 10px 20px; border-radius: 4px; font-size: 12px;
+            z-index: 100; border: 1px solid #444;
+            display: none;
         }
+        .error { border-color: #e91e63 !important; color: #ff80ab !important; }
+        .success { border-color: #00bcd4 !important; color: #00bcd4 !important; }
     </style>
 </head>
 <body>
 
-<div id="loading">Updating Analysis...</div>
+<div id="status-msg">Ready</div>
 
 <div id="sidebar">
-    <h1>CrimeEye London</h1>
-    <h2>Dynamic Hex-Grid Aggregation</h2>
+    <h1>CrimeEye Live</h1>
+    <h2>UK Police API Integration</h2>
     
+    <div class="control-group">
+        <label for="date-selector">Data Period (YYYY-MM)</label>
+        <input type="month" id="date-selector" onchange="forceRefresh()">
+    </div>
+
     <div class="stat-card">
-        <div class="stat-value" id="current-resolution">0.5 km</div>
-        <div class="stat-label">Current Grid Resolution</div>
+        <div class="stat-value" id="crime-count">-</div>
+        <div class="stat-label">Total Crimes in View</div>
     </div>
     
     <div class="stat-card" style="border-color: #e91e63;">
@@ -88,15 +108,10 @@
     <div class="chart-container">
         <canvas id="crimeChart"></canvas>
     </div>
-    
-    <p style="font-size: 11px; color: #aaa; margin-top: 15px; text-align:center; font-style:italic;">
-        Hover over map to filter chart. Zoom to resample grid.
-    </p>
 
     <div class="source-link">
-        Data Structure: UK Police API (Simulated)<br>
-        Analysis: Turf.js Client-Side Clustering<br>
-        <a href="https://data.police.uk/" target="_blank">View Original Data Source</a>
+        Data Source: <a href="https://data.police.uk/docs/method/crime-street/" target="_blank">UK Police API</a><br>
+        (Contains public sector information licensed under the Open Government Licence v3.0)
     </div>
 </div>
 
@@ -104,6 +119,21 @@
 
 <script>
     // --- 1. SETUP CHART ---
+    // We need a larger palette because real data has 14+ categories
+    const categoryColors = {
+        'anti-social-behaviour': '#ffeb3b',
+        'burglary': '#e91e63',
+        'drugs': '#9c27b0',
+        'public-order': '#ff9800',
+        'violent-crime': '#f44336',
+        'vehicle-crime': '#03a9f4',
+        'other-theft': '#8bc34a',
+        'shoplifting': '#00bcd4',
+        'robbery': '#795548',
+        'criminal-damage-arson': '#607d8b',
+        'other': '#9e9e9e'
+    };
+    
     const ctx = document.getElementById('crimeChart').getContext('2d');
     let crimeChart = new Chart(ctx, {
         type: 'bar',
@@ -112,15 +142,7 @@
             datasets: [{
                 label: 'Incidents',
                 data: [],
-                // Expanded palette to ensure 5+ categories are distinct
-                backgroundColor: [
-                    '#00bcd4', // Cyan
-                    '#e91e63', // Pink
-                    '#ff9800', // Orange
-                    '#9c27b0', // Purple
-                    '#4caf50', // Green
-                    '#ffeb3b'  // Yellow (Safety fallback)
-                ],
+                backgroundColor: '#00bcd4',
                 borderRadius: 3
             }]
         },
@@ -130,7 +152,7 @@
             plugins: { legend: { display: false } },
             scales: {
                 y: { beginAtZero: true, grid: { color: '#333' }, ticks: { color: '#888' } },
-                x: { ticks: { color: '#888', font: { size: 9 } }, grid: { display: false } }
+                x: { ticks: { color: '#888', font: { size: 9 }, display: false } } // Hide labels to save space
             }
         }
     });
@@ -139,55 +161,119 @@
     const map = new maplibregl.Map({
         container: 'map',
         style: 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json',
-        center: [-0.1276, 51.5074],
-        zoom: 12,
-        minZoom: 10,
-        maxZoom: 16
+        center: [-0.1276, 51.5074], // London
+        zoom: 13,
+        minZoom: 9 // Restrict zoom to prevent crashing
     });
 
-    // --- 3. DATA GENERATION ---
-    let allCrimePoints = null;
+    // --- 3. API HANDLING ---
+    
+    // Set default date to 2 months ago (Police data always lags by ~1-2 months)
+    const today = new Date();
+    today.setMonth(today.getMonth() - 2);
+    const defaultDate = today.toISOString().slice(0, 7); // YYYY-MM
+    document.getElementById('date-selector').value = defaultDate;
 
-    function generateWideAreaMockData() {
-        const bounds = [-0.50, 51.30, 0.20, 51.70]; 
-        const points = turf.randomPoint(5000, { bbox: bounds });
-        
-        // HERE ARE YOUR 5 CATEGORIES
-        const categories = ['Theft', 'Burglary', 'Drugs', 'Violence', 'Vehicle'];
-        
-        turf.featureEach(points, function (currentFeature) {
-            currentFeature.properties = {
-                category: categories[Math.floor(Math.random() * categories.length)],
-                id: Math.random().toString(36).substr(2, 9)
-            };
-        });
-        return points;
+    let debounceTimer;
+
+    function showStatus(msg, type = 'normal') {
+        const el = document.getElementById('status-msg');
+        el.innerText = msg;
+        el.style.display = 'block';
+        el.className = type === 'error' ? 'error' : 'success';
     }
 
-    allCrimePoints = generateWideAreaMockData();
-
-
-    // --- 4. CORE LOGIC (UNCHANGED) ---
-    let debounceTimer;
-    
-    function updateGrid() {
-        document.getElementById('loading').style.display = 'block';
-
-        const zoom = map.getZoom();
-        let hexRadius; 
+    // Function to generate Polygon String for API
+    function getPolyString() {
+        const bounds = map.getBounds();
+        // Create a simple box: NW, NE, SE, SW
+        const nw = bounds.getNorthWest();
+        const ne = bounds.getNorthEast();
+        const se = bounds.getSouthEast();
+        const sw = bounds.getSouthWest();
         
-        if (zoom < 11) hexRadius = 2.0;       
-        else if (zoom < 12) hexRadius = 1.0;  
-        else if (zoom < 13.5) hexRadius = 0.5;
-        else hexRadius = 0.2;                 
+        // Format: lat,lng:lat,lng:lat,lng:lat,lng
+        return `${nw.lat},${nw.lng}:${ne.lat},${ne.lng}:${se.lat},${se.lng}:${sw.lat},${sw.lng}`;
+    }
 
-        document.getElementById('current-resolution').innerText = `${hexRadius} km`;
+    async function fetchCrimeData() {
+        const zoom = map.getZoom();
+        
+        // SAFEGUARD: API Limit Check
+        // If zoom is too far out, the area is too big and will hit the 10k crime limit (503 error)
+        if (zoom < 11) {
+            showStatus("⚠️ Zoom in to load data (Area too large)", "error");
+            return null;
+        }
 
+        showStatus("Fetching from UK Police API...", "normal");
+        
+        const date = document.getElementById('date-selector').value;
+        const poly = getPolyString();
+        
+        // Construct API URL
+        const url = `https://data.police.uk/api/crimes-street/all-crime?poly=${poly}&date=${date}`;
+
+        try {
+            const response = await fetch(url);
+            
+            if (response.status === 503) {
+                throw new Error("Too many crimes in view (>10,000). Zoom in further.");
+            }
+            if (!response.ok) {
+                throw new Error(`API Error: ${response.statusText}`);
+            }
+
+            const data = await response.json();
+            showStatus(`Loaded ${data.length} records for ${date}`, "success");
+            
+            // Convert to GeoJSON
+            return {
+                type: "FeatureCollection",
+                features: data.map((crime, index) => ({
+                    type: "Feature",
+                    id: index, // Needed for feature-state
+                    geometry: {
+                        type: "Point",
+                        coordinates: [parseFloat(crime.location.longitude), parseFloat(crime.location.latitude)]
+                    },
+                    properties: {
+                        category: crime.category,
+                        id: crime.id
+                    }
+                }))
+            };
+
+        } catch (err) {
+            showStatus(err.message, "error");
+            console.error(err);
+            return null;
+        }
+    }
+
+    // --- 4. CORE LOGIC (Resampling & Analysis) ---
+    
+    async function updateGrid() {
+        const crimeGeoJSON = await fetchCrimeData();
+        
+        // If API failed or refused, stop here
+        if (!crimeGeoJSON) return; 
+
+        document.getElementById('crime-count').innerText = crimeGeoJSON.features.length.toLocaleString();
+
+        // 1. Grid Resolution Logic
+        const zoom = map.getZoom();
+        let hexRadius = zoom < 12 ? 1.0 : (zoom < 13.5 ? 0.5 : 0.2); // km
+
+        // 2. Generate Grid
         const bounds = map.getBounds();
         const bbox = [bounds.getWest(), bounds.getSouth(), bounds.getEast(), bounds.getNorth()];
         const hexGrid = turf.hexGrid(bbox, hexRadius, {units: 'kilometers'});
-        const aggregated = turf.collect(hexGrid, allCrimePoints, 'category', 'crime_types');
 
+        // 3. Spatial Join (Analysis)
+        const aggregated = turf.collect(hexGrid, crimeGeoJSON, 'category', 'crime_types');
+
+        // 4. Filter empty hexes
         const activeHexes = [];
         turf.featureEach(aggregated, (feature, index) => {
             const count = feature.properties.crime_types.length;
@@ -200,6 +286,7 @@
 
         const finalData = { type: "FeatureCollection", features: activeHexes };
         
+        // 5. Render to Map
         if (map.getSource('hexagons')) {
             map.getSource('hexagons').setData(finalData);
         } else {
@@ -213,16 +300,10 @@
                     'fill-color': [
                         'interpolate', ['linear'], ['get', 'density'],
                         0, '#2c3e50',
-                        5, '#00bcd4', 
-                        20, '#e91e63'
+                        10, '#00bcd4', 
+                        50, '#e91e63'
                     ],
-                    'fill-opacity': [
-                        'case',
-                        ['boolean', ['feature-state', 'hover'], false],
-                        0.8, 
-                        0.5 
-                    ],
-                    'fill-outline-color': 'rgba(0,0,0,0.2)'
+                    'fill-opacity': ['case', ['boolean', ['feature-state', 'hover'], false], 0.8, 0.5]
                 }
             });
 
@@ -230,72 +311,61 @@
                 id: 'hex-line',
                 type: 'line',
                 source: 'hexagons',
-                paint: {
-                    'line-color': '#00bcd4',
-                    'line-width': [
-                        'case',
-                        ['boolean', ['feature-state', 'hover'], false],
-                        2, 0 
-                    ]
-                }
+                paint: { 'line-color': '#00bcd4', 'line-width': 1 }
             });
         }
-
-        document.getElementById('loading').style.display = 'none';
     }
 
+    function forceRefresh() {
+        updateGrid();
+    }
 
     map.on('load', () => {
-        updateGrid(); 
-        
+        updateGrid(); // Initial Load
+
         let hoveredId = null;
 
+        // Interaction: Hover
         map.on('mousemove', 'hex-fill', (e) => {
             if (e.features.length > 0) {
                 const feature = e.features[0];
-                
-                if (hoveredId !== null) {
-                    map.setFeatureState({source: 'hexagons', id: hoveredId}, {hover: false});
-                }
+                if (hoveredId !== null) map.setFeatureState({source: 'hexagons', id: hoveredId}, {hover: false});
                 hoveredId = feature.id;
                 map.setFeatureState({source: 'hexagons', id: hoveredId}, {hover: true});
-                
                 map.getCanvas().style.cursor = 'pointer';
 
-                const density = feature.properties.density;
-                document.getElementById('hex-density').innerText = density;
-
+                // Dashboard Update
+                document.getElementById('hex-density').innerText = feature.properties.density;
+                
+                // Chart Update
                 let crimeTypes = [];
-                try {
-                     crimeTypes = JSON.parse(feature.properties.crime_types);
-                } catch(err) {
-                     crimeTypes = feature.properties.crime_types || [];
-                }
-
+                try { crimeTypes = JSON.parse(feature.properties.crime_types); } 
+                catch(e) { crimeTypes = feature.properties.crime_types || []; }
+                
                 const counts = {};
                 crimeTypes.forEach(x => { counts[x] = (counts[x] || 0) + 1; });
                 
                 crimeChart.data.labels = Object.keys(counts);
                 crimeChart.data.datasets[0].data = Object.values(counts);
+                // Dynamic Coloring based on category
+                crimeChart.data.datasets[0].backgroundColor = Object.keys(counts).map(cat => categoryColors[cat] || '#999');
                 crimeChart.update();
             }
         });
 
         map.on('mouseleave', 'hex-fill', () => {
-            if (hoveredId !== null) {
-                map.setFeatureState({source: 'hexagons', id: hoveredId}, {hover: false});
-            }
+            if (hoveredId !== null) map.setFeatureState({source: 'hexagons', id: hoveredId}, {hover: false});
             hoveredId = null;
             map.getCanvas().style.cursor = '';
             document.getElementById('hex-density').innerText = '-';
         });
 
+        // Trigger update when map movement ends
         map.on('moveend', () => {
             clearTimeout(debounceTimer);
-            debounceTimer = setTimeout(updateGrid, 100); 
+            debounceTimer = setTimeout(updateGrid, 500); // 500ms delay to be kind to the API
         });
     });
-
 </script>
 </body>
 </html>
