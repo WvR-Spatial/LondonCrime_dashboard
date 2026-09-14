@@ -10,7 +10,7 @@
 <link href="https://api.mapbox.com/mapbox-gl-js/v3.2.0/mapbox-gl.css" rel="stylesheet" />
 <script src="https://unpkg.com/h3-js@4.1.0/dist/h3-js.umd.js"></script>
 <script>
-  // CDN fallback: a portfolio piece must not white-screen because one host is down.
+  // CDN fallback: trying to avoid white-screen because host is down.
   if (typeof h3 === 'undefined') {
     document.write('<script src="https://cdn.jsdelivr.net/npm/h3-js@4.1.0/dist/h3-js.umd.js"><\/script>');
   }
@@ -291,27 +291,27 @@ details.method[open] summary::after{content:'–'}
       <summary>Method &amp; limitations</summary>
       <div class="method-body">
         <h4>Spatial binning</h4>
-        <p>Points are binned to <strong>H3</strong> cells — a fixed global hexagonal index. Because cells are globally anchored rather than derived from the viewport, a cell keeps the same identity as you pan, which is what makes caching, month-on-month joins and permalinks valid. Resolution steps with zoom (<code>r7</code>–<code>r10</code>).</p>
+        <p>Points are binned to <strong>H3</strong> cells — a fixed global hexagonal index. Because cells are globally anchored rather than derived from the viewport, a cell keeps the same identity as you pan, making caching, month-on-month joins and permalinks valid. Resolution steps with zoom (<code>r7</code>–<code>r10</code>).</p>
 
         <h4>Normalisation</h4>
         <p>All choropleths map <strong>crimes per km²</strong>, using each cell's true geodesic area (<code>h3.cellArea</code>). Raw counts are not comparable across resolutions, and H3 cell area varies slightly with latitude and icosahedral distortion.</p>
 
         <h4>Class breaks</h4>
-        <p>Crime density is strongly right-skewed. <em>Quantile</em> breaks (equal cell counts) maximise visual discrimination but are recomputed per view, so a colour is <strong>only</strong> comparable within the current extent. <em>Fixed</em> breaks use an absolute log-spaced scale and are comparable between places and months. Choose deliberately.</p>
+        <p>Crime density is very often strongly right-skewed. <em>Quantile</em> breaks (equal cell counts) maximise visual discrimination but are recomputed per view, so a colour is <strong>only</strong> comparable within the current extent. <em>Fixed</em> breaks use an absolute log-spaced scale and are comparable between places and months. Choose appropriately.</p>
 
         <h4>Concentration (location quotient)</h4>
-        <p>LQ = (category share within cell) ÷ (category share across the loaded extent). LQ&nbsp;&gt;&nbsp;1 means the category is over-represented relative to that cell's total crime — this separates genuine specialisation from ordinary footfall effects. Cells with fewer than 5 crimes are suppressed, as the ratio is unstable at low counts.</p>
+        <p>LQ = (category share within cell) ÷ (category share across the loaded extent). LQ&nbsp;&gt;&nbsp;1 means the category is over-represented relative to that cell's total crime - this separates genuine specialisation from ordinary footfall effects. Cells with fewer than 5 crimes are suppressed, as the ratio is unstable at low counts.</p>
 
         <h4>Hotspots (Getis-Ord Gi*)</h4>
-        <p>Gi* z-scores use binary first-order (k=1) contiguity weights including the focal cell. Zero-count cells inside the loaded extent are retained in the analysis set — excluding them would bias the statistic badly. Classes are the conventional 90 / 95 / 99% confidence bands.</p>
-        <p><strong>Caveat:</strong> no false-discovery-rate correction is applied, so with thousands of cells some "significant" results are expected by chance. Gi* is also sensitive to bin size and extent (the modifiable areal unit problem) — change the zoom and the hotspots will shift.</p>
+        <p>Gi* z-scores use binary first-order (k=1) contiguity weights including the focal cell. Zero-count cells inside the loaded extent are retained in the analysis set - excluding them would bias the statistic badly. Classes are the conventional 90 / 95 / 99% confidence bands.</p>
+        <p><strong>Caveat:</strong> no false-discovery-rate correction is applied, so with thousands of cells some "significant" results are expected by chance. Gi* is also sensitive to bin size and extent (the modifiable areal unit problem) - change the zoom and the hotspots will shift.</p>
 
         <h4>Data &amp; its limits</h4>
         <ul>
-          <li>Locations are <strong>snapped to anonymised map points</strong>, not true incident locations. Fine-grained patterns partly reflect the snap grid, not offending.</li>
+          <li>Locations are <strong>snapped to anonymised map points</strong>, not true incident locations. Fine-grained patterns partly reflect the snap grid, not just offences.</li>
           <li>Coverage is England, Wales and Northern Ireland plus British Transport Police. <strong>Scotland is not included.</strong></li>
           <li>Data lag is roughly two months; counts are recorded crime, so they measure reporting and enforcement as well as crime.</li>
-          <li>The API caps a single query at 10,000 crimes. The viewport is therefore tiled into H3 <code>r6</code> requests, capped per view — the dashed outline on the map is the true loaded extent.</li>
+          <li>The API caps a single query at 10,000 crimes. The viewport is therefore tiled into H3 <code>r6</code> requests, capped per view - the dashed outline on the map is the true loaded extent.</li>
         </ul>
 
         <h4>Architecture</h4>
@@ -553,7 +553,7 @@ const Store = {
 };
 
 /* ==========================================================================
-   4. H3 TILING  — which API requests does this viewport need?
+   4. H3 TILING  — aka, which API requests does this viewport need?
    ========================================================================== */
 
 function viewportTiles() {
@@ -561,8 +561,8 @@ function viewportTiles() {
   const c = map.getCenter();
   const centre = h3.latLngToCell(c.lat, c.lng, CFG.FETCH_RES);
 
-  // Ring outwards until the disk covers the viewport or we hit the request cap.
-  // gridDisk is O(k²) and cheap; polygonToCells over a continental viewport is not.
+  // Ring outwards until the disk covers the viewport or hits the request cap.
+  // gridDisk is O(k²) and cheap; polygonToCells over a continental viewport is less so.
   let cells = [centre];
   for (let k = 1; k <= 6; k++) {
     const next = h3.gridDisk(centre, k);
@@ -646,11 +646,11 @@ async function loadTile(month, cell, depth = 0) {
   }
 
   // The API returns 503 when a single query exceeds 10,000 crimes.
-  // Rather than failing, split the tile into its seven children and retry.
+  // Rather than allowing the failure, split the tile into its seven children and retry.
   if (res.status === 503 && CFG.SUBDIVIDE_ON_503 && depth < 2) {
     const kids = h3.cellToChildren(cell, CFG.FETCH_RES + depth + 1);
     // Lower concurrency here: this pool runs *inside* an outer pool worker, so the
-    // effective parallelism multiplies. Keeps us inside the API's rate limit.
+    // effective parallelism multiplies. Keeps requests inside the API's rate limit.
     const parts = await runPool(kids.map(k => () => loadTile(month, k, depth + 1)), 2);
     const merged = parts.filter(Boolean).flat();
     runtime.tiles.set(key, merged);
@@ -677,7 +677,7 @@ async function loadTile(month, cell, depth = 0) {
   return compact;
 }
 
-/** Bounded-concurrency task pool. Keeps us well inside the API's rate limit. */
+/** Bounded-concurrency task pool. Keeps requests well inside the API's rate limit. */
 async function runPool(tasks, limit) {
   const results = new Array(tasks.length);
   let i = 0;
@@ -705,7 +705,7 @@ function chooseAnalysisRes(zoom, tileCount) {
 
 /**
  * Builds the analysis set. Critically this includes ZERO-COUNT cells across the
- * whole loaded extent — omitting them would badly bias Gi* toward significance.
+ * whole loaded extent - omission would badly bias Gi* toward significance.
  */
 function buildCells(tileIds, dataA, dataB, res) {
   const cells = new Map();
@@ -748,7 +748,7 @@ function computeMetrics(cells, mode, category) {
 
   if (mode === 'change') {
     for (const c of arr) {
-      // NOTE: category filter cannot apply to the baseline month — the API is
+      // NOTE: category filter cannot apply to the baseline month - the API is
       // queried as all-crime, so change is computed on totals. Stated in the panel.
       c.value = (c.a - c.b) / c.area;
       c.valid = true;
@@ -928,7 +928,7 @@ function symbolise(metrics, mode, classification) {
 const map = new mapboxgl.Map({
   container: 'map',
   style: BASEMAPS[state.basemap].url,
-  projection: 'mercator',   // globe (the v3 default) distorts getBounds and the tiling maths
+  projection: 'mercator',   // globe (the v3 default) distorts getBounds and the tiling maths......grrr
   center: [state.center.lng, state.center.lat],
   zoom: state.zoom,
   minZoom: 5,
@@ -1161,7 +1161,7 @@ function syncStateFromMap() {
 }
 
 /* ==========================================================================
-   11. UI — stats, chart, legend, interaction
+   11. UI - stats, chart, legend, interaction
    ========================================================================== */
 
 function setText(id, t) { const e = document.getElementById(id); if (e) e.textContent = t; }
@@ -1405,9 +1405,9 @@ document.addEventListener('keydown', e => {
 });
 document.getElementById('unpin').addEventListener('click', clearPin);
 
-/* Right-click clears the pin too — redundant with Esc, the × and clicking the
+/* Right-click clears the pin - redundant with Esc, the × and clicking the
    cell again. Guarded on drag distance because Mapbox binds right-drag to
-   rotate, and a rotate gesture ends by firing contextmenu in most browsers. */
+   rotate, and a rotate gesture ends by firing contextmenu in most current browsers. */
 let rmbOrigin = null;
 map.getCanvasContainer().addEventListener('mousedown', e => {
   if (e.button === 2) rmbOrigin = { x:e.clientX, y:e.clientY };
@@ -1427,9 +1427,9 @@ map.on('moveend', () => { syncStateFromMap(); scheduleRun(false); });
    ========================================================================== */
 
 const MODE_HINTS = {
-  density:'Crimes per km². Absolute intensity — largely tracks footfall and population.',
+  density:'Crimes per km². Absolute intensity - largely tracks footfall and population.',
   lq:'Where a category is over-represented relative to the local crime mix. Controls for footfall.',
-  hotspot:'Getis-Ord Gi* — statistically significant clustering, not just high values.',
+  hotspot:'Getis-Ord Gi* - statistically significant clustering, not just high values.',
   change:'Month-on-month change per km². Computed on all crime; category filter does not apply.'
 };
 
@@ -1544,7 +1544,7 @@ function shiftMonth(ym, delta) {
 
 /**
  * Ask the API which month is actually the latest, rather than guessing
- * "two months ago" — the lag is not constant.
+ * "two months ago" — the lag is not actually constant, I discovered this the hard way.
  */
 async function resolveLatestMonth() {
   try {
